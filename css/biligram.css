@@ -1,0 +1,18 @@
+#followUpRiskFactors {
+    display:none;
+    background-color: lightgray;
+    padding:10px 10px 10px 10px;
+    width: 310px;
+    border-color: darkblue;
+    border-width: 5px;
+}
+
+/* mouseover state */
+#trigger:hover {
+    background-position:0 -44px;
+}
+
+/* clicked state */
+#trigger:focus {
+    background-position:0 -88px;
+}
