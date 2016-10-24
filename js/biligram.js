@@ -201,7 +201,7 @@ var treatmentZone = {
 
 
 // Incoming results from Epic
-var results = [];
+var results = {};
 
 // The actual array of objects we'll plot on the graph, based on the results
 var resultsSeries = [];
@@ -252,11 +252,7 @@ $(function () {
 
 		var hours, level, method, resultTable;
 
-		// For testing purposes, assume the infant was born 5 days ago
-		var birthDateTime = (5).days().ago();
-
-
-		// for testing
+        /*
 		results = {
 			birthGA: 35.6,
 			birthWeight: 2.630,
@@ -270,7 +266,65 @@ $(function () {
 			mini: false
 
 		};
+		*/
 
+
+        // Give a div component with Epic EMR @lablast@ output, convert to a JSON object
+        function translateData(component) {
+            var data = [];
+            $("#" + component + " tr").each(function(index) {
+                if (index > 1) {			// Skip the first index since it's the header row
+                    var cells = $("td", this);
+                    data.push({
+                        drawtime : cells[0].innerText,
+                        level : parseFloat(cells[1].innerText)	// Parsefloat gets rid of things like asterisks for out of range values
+                    });
+                }
+            });
+            return data;
+        }
+
+		// Given a photoTherapy div (output of an LPG which yields phototherapy flowsheet rows)
+		// generate an array of phototherapy start times. Note that there are no end times, but nurses document at least every 4 hours,
+		// so we'll try to make a vague line that stretches out to 4 hours
+		// Results will come in two rows: columns of timestamps (6/3/2016 1518) followed by a row of methods (bank lights,
+		// triple lights, double lights, blanket/pad, overhead, bed — multiple therapies will be separated by a semicolon
+		function translatePhotoTherapy(component) {
+			var data = [];
+			var phototherapyOutput = $("textarea#photoTherapy").val();
+
+            if (typeof phototherapyOutput == "undefined") {
+                return;
+            } else {
+				// var datetime = /([0-9+]\/[0-9]+\/[0-9]+)\s([0-9]{4})/g.exec(phototherapyOutput);
+				// First we grab a list of datetimes
+				var datetime = phototherapyOutput.match(/([0-9+]\/[0-9]+\/[0-9]+)\s([0-9]{4})/g);
+
+				// Then we remove the datetimes from the string
+				phototherapyOutput = phototherapyOutput.replace(/([0-9+]\/[0-9]+\/[0-9]+)\s([0-9]{4})/g, '');
+
+				// Then we get rid of the Source (Phototherapy): headers
+				phototherapyOutput = phototherapyOutput.replace(/Source \(Phototherapy\):\s/g, '');
+
+				// Get rid of the main Phototherapy header on top
+				phototherapyOutput = phototherapyOutput.replace(/Phototherapy/, '');
+
+				// Replace triple tabs with a single
+				phototherapyOutput = phototherapyOutput.replace(/\t\t\t/g, '\t');
+				phototherapyOutput = phototherapyOutput.replace(/[\n|\r]/g, '\t');
+
+				// var method = phototherapyOutput.match()
+				/*
+				 data.push({
+				 starttime: ,
+				 method:
+				 });
+				 */
+				return data;
+			}
+		}
+		
+		
 		// for testing, our fake results will be some number of hours ahead of the birthdate-time
 		// given a number of hours
 		function addHours(hours) {
@@ -281,6 +335,7 @@ $(function () {
 		}
 
 		// Put the name of the method (serum, POC, transcut) in the result array of objects
+		// IE10+ compatible, so re-written as addMethod2 to handle older versions of IE
 		function addMethod(method, element) {
 			var newElement = {
 				drawtime: element.drawtime,
@@ -290,15 +345,108 @@ $(function () {
 			return newElement;
 		}
 
+		function addMethod2(objectArray, method) {
+			var returnArray = [];
+			for (var i = 0; i < objectArray.length; i++ ) {
+				returnArray.push( {
+					drawtime: objectArray[i].drawtime,
+					level: objectArray[i].level,
+					method: method
+				})
+			}
 
+			return returnArray;
+		}
 
-		// Add the methodology of the bilirubin assay to the array of objects (so, the array of serum levels adds a reference to each
+        // Convert an array with drawtimes in text ("6/4/16 12:02") to its Javascript equivalent
+        function convertDateTime(element) {
+            var newElement = {
+                drawtime: Date.parse(element.drawtime),
+                level: element.level
+
+            };
+            return newElement;
+        }
+
+		function stickAColonInIt(time) {
+			if (time.indexOf(':') >= 0) {
+				return time;
+			} else {
+				var len = time.length;
+				if (len == 4) {
+					return time.slice(0,2) + ':' + time.slice(2,4);
+				} else {
+					return time.slice(0,1) + ':' + time.slice(1,3);
+				}
+
+			}
+		}
+
+        // Given a birth gestational age like 36 6/7 weeks, convert to 36.85...
+        // We could use eval, and it seems unlikely that someone would pass us bogus stuff to evaluate,
+        // But I thought we'd be paranoid
+        function convertWholePlusFrac(birthGA) {
+            var wholePlusFrac = birthGA.split(' ');
+            if (wholePlusFrac.length > 1) {
+                var frac = wholePlusFrac[1].split('/');
+                var whole = parseInt(wholePlusFrac[0]);
+                var result = whole + (parseInt(frac[0])/parseInt(frac[1]));
+                return result;
+            } else {
+                return birthGA;
+            }
+        }
+        // Grab the results from the data div on the ETX HTML page
+        results.serum = translateData("biliSerum");
+        results.POC = translateData("biliPOC");
+        results.TCLab = translateData("biliTCLab");
+		results.photoTherapy = translatePhotoTherapy("photoTherapy");
+		
+        results.birthDay = $("textarea#birthDay").val();
+        results.birthTime = $("textarea#birthTime").val();
+
+		results.birthTime = stickAColonInIt(results.birthTime);
+
+        birthDateTime = Date.parse(results.birthDay + ' ' + results.birthTime);
+        if (birthDateTime == null) {
+            $('#resultTable').append('<div class="alert alert-danger"><b>Warning:</b> Could not figure out the birth date/time or it doesn\'t seem valid (' + birthDateTime + '</div>');
+
+        }
+
+        results.birthGA = convertWholePlusFrac($("textarea#birthGA").val());
+
+        // These come as "2.930 kg (6 lb 10 oz)" - we'll just grab the floating point value in front
+        results.birthWeight = parseFloat($("textarea#birthWeight").val());
+        if (results.birthWeight < 0.5) {
+            $('#resultTable').append('<div class="alert alert-danger"><b>Warning:</b> Could not figure out the birth weight or it doesn\'t seem valid (' + results.birthWeight + ' kg)</div>');
+
+        }
+
+        // Convert the text date/times (6/4/16 12:02) to their Javascript equivalents
+		// Switched from JS map method to JQuery for IE compatibility
+        // results.serum = results.serum.map(convertDateTime);
+		results.serum = $.map(results.serum, convertDateTime);
+		// results.POC = results.POC.map(convertDateTime);
+		results.POC = $.map(results.POC, convertDateTime);
+		// results.TCLab = results.TCLab.map(convertDateTime);
+		results.TCLab = $.map(results.TCLab, convertDateTime);
+
+		// results.photoTherapy = 
+
+        // Add the methodology of the bilirubin assay to the array of objects (so, the array of serum levels adds a reference to each
 		// object to the method being serum
 		// Using the map method for brevity, and the .bind(null... in order to pass in an extra argument (the method),
 		// so we don't need 3 different functions
-		results.serum = results.serum.map(addMethod.bind(null, 'serum'));
-		results.POC = results.POC.map(addMethod.bind(null, 'POC'));
-		results.TCLab = results.TCLab.map(addMethod.bind(null, 'transcut'));
+		// Turns out this works in IE10+, but sometimes our EMR seems to insist on IE5 mode, so switched to a custom function
+		// results.serum = results.serum.map(addMethod.bind(null, 'serum'));
+		results.serum = addMethod2(results.serum, 'serum');
+
+		// results.POC = results.POC.map(addMethod.bind(null, 'POC'));
+		results.POC = addMethod2(results.POC, 'POC');
+
+		// results.TCLab = results.TCLab.map(addMethod.bind(null, 'transcut'));
+		results.TCLab = addMethod2(results.TCLab, 'transcut');
+
 
 		// Now, merge all the arrays of results (from the different methodologies) into one big sorted array
 		results.sortedResults = results.serum.concat(results.POC, results.TCLab).sort(function(a, b) {
@@ -334,7 +482,7 @@ $(function () {
 
 		// Given a data point, give it its decorations based on risk zone
 		function decorateDataPoint (dataPoint, hours, level, method, color, description) {
-			dataPoint.customTooltip = '<span style="font-size: 0.85em"><b>' + hours + '</b> hours of age — <b>' + level + '</b> mg/dL (' + method + ')</span><br/>' +
+			dataPoint.customTooltip = '<span style="font-size: 0.85em"><b>' + hours + '</b> hours of age &mdash; <b>' + level + '</b> mg/dL (' + method + ')</span><br/>' +
 				'<span style="color: ' + color + '"> &#9673; </span>' + description + ' risk zone';
 			dataPoint.marker.lineColor = color;
 			dataPoint.dataLabels.formatter = function () {
@@ -405,11 +553,11 @@ $(function () {
 		var rowClass = "result-row-first";
 
 		for (var i = results.sortedResults.length - 1; i >= 0; i--) {
-			// for (var i = 0; i < results.sortedResults.length; i++) {
+		// for (var i = 0; i < results.sortedResults.length; i++) {
 			hours = ((results.sortedResults[i].drawtime - birthDateTime) / 3600000).toFixed(1);
 			level = results.sortedResults[i].level;
 			method = results.sortedResults[i].method;
-			method = results.sortedResults[i].method;
+
 			var drawtime = results.sortedResults[i].drawtime;
 			var drawtimeAbbreviated = (1 + drawtime.getMonth()) + '/' + drawtime.getDate() + ' ' + drawtime.getHours() + ':' +  ('0' + drawtime.getMinutes()).slice(-2);
 			var riskZonePlacement = riskZone.exceeds(hours, level);
@@ -567,7 +715,7 @@ $(function () {
 		$('input[type=checkbox]').change(function(e) {
 			if (this.id == 'showTable') {
 				$(".result-row-first").slideDown();
-				if ((location.pathname).includes('table-only.html')) {
+				if ((location.pathname).indexOf('table-only.html') >= 0) {
 					$(".result-row").slideDown();
 					$("#all").prop('checked', true);
 				} else {
@@ -603,21 +751,21 @@ $(function () {
 		// Set up the tooltip for the result table (that displays the risk factors peculiar to follow-up guidelines)
 		$(".trigger").tooltip({ position: "bottom center", opacity: 0.95, tip: "#followUpRiskFactors"});
 
-		// In mini mode, we don't show the graph; otherwise, show the graph
-		if ( /* (results.mini == false  || */ !(location.pathname).includes('table-only.html')) {
 
-			renderChart();
-		} else {
-			// In table only mode, show the whole table, not just the latest row
-			$(".result-row-first,.result-row").slideDown();
-			$("#all").prop('checked', true);
-
-		}
 	}		// End function getBiliResults
 
 	// Main execution entry point
 	getBiliResults();
 
+	// In mini mode, we don't show the graph; otherwise, show the graph
+	if ( /* (results.mini == false  || */ !(location.pathname).indexOf('table-only.html') >= 0) {
+		renderChart();
+	} else {
+		// In table only mode, show the whole table, not just the latest row
+		$(".result-row-first,.result-row").slideDown();
+		$("#all").prop('checked', true);
+
+	}
 });			// End function()
 
 // Support functions for setting up series for plotting
@@ -660,191 +808,413 @@ function addXCoordinates(yCoordinates, interval, startsAt) {
 
 // $('#container').highcharts({
 function renderChart () {
-	var chart = new Highcharts.Chart({
-		title: {
-			// text: 'Bilirubin nomogram',
-			text: '',
-			x: -120 //center
-		},
+		var chartOptions = {
+			title: {
+				// text: 'Bilirubin nomogram',
+				text: '',
+				x: -120 //center
+			},
 
-		credits: {
-			enabled: false
-		},
-		chart: {
-			type: 'arearange',
-			// events: getBiliResults(),
-			zoomType: 'xy',
-			panning: true,
-			panKey: 'shift',
-			animation: false,
-			renderTo: container
-		},
-		subtitle: {
-			// text: 'Source: <a href="http://pediatrics.aappublications.org/content/114/1/297">Pediatrics 2004; 114(1)</a>',
-			x: -20
-		},
-		xAxis: [{
-			title: {
-				text: 'Age <i>(hours)</i>'
+			credits: {
+				enabled: false
 			},
-			tickInterval: 24,
-			minorTickInterval: 12
-		}, {
-			title: {
-				text: 'Age <i>(days)</i>'
+			chart: {
+				type: 'arearange',
+				// events: getBiliResults(),
+				zoomType: 'xy',
+				panning: true,
+				panKey: 'shift',
+				animation: false,
+				renderTo: 'container'
 			},
-			labels: {
-				formatter: function () {
-					return this.value / 24;
+			subtitle: {
+				// text: 'Source: <a href="http://pediatrics.aappublications.org/content/114/1/297">Pediatrics 2004; 114(1)</a>',
+				x: -20
+			},
+			xAxis: [{
+				title: {
+					text: 'Age <i>(hours)</i>'
+				},
+				tickInterval: 24,
+				minorTickInterval: 12
+			}, {
+				title: {
+					text: 'Age <i>(days)</i>'
+				},
+				labels: {
+					formatter: function () {
+						return this.value / 24;
+					}
+				},
+				linkedTo: 0,	// this secondary access just re-displays the primary (0) axis in a different format
+				opposite: true
+			}],
+			yAxis: {
+				title: {
+					text: 'Total serum bilirubin (mg/dL)'
+				},
+				plotLines: [{
+					value: 0,
+					width: 1,
+					color: 'gray'
+
+				}],
+				floor: 0
+				// max: 25
+				// ceiling: 25
+			},
+			legend: {
+				layout: 'vertical',
+				align: 'right',
+				verticalAlign: 'middle',
+				borderWidth: 0,
+				useHTML: true,
+				itemHoverStyle: {
+					color: 'DarkGray'
 				}
 			},
-			linkedTo: 0,	// this secondary access just re-displays the primary (0) axis in a different format
-			opposite: true
-		}],
-		yAxis: {
-			title: {
-				text: 'Total serum bilirubin (mg/dL)'
+			tooltip: {
+				useHTML: true,
+				opacity: 0.9,
+				formatter: function () {
+					// return this.series.name;
+					return this.point.customTooltip;
+				}
+
 			},
-			plotLines: [{
-				value: 0,
-				width: 1,
-				color: 'gray'
+			plotOptions: {
+				series: {
+					allowPointSelect: false,
+					enableMouseTracking: false,
+					fillOpacity: 0.6,
+					lineWidth: 0,
+					marker: {
+						enabled: false
+					},
+					animation: false
 
-			}],
-			floor: 0
-			// max: 25
-			// ceiling: 25
-		},
-		legend: {
-			layout: 'vertical',
-			align: 'right',
-			verticalAlign: 'middle',
-			borderWidth: 0,
-			useHTML: true,
-			itemHoverStyle: {
-				color: 'DarkGray'
-			}
-		},
-		tooltip: {
-			useHTML: true,
-			opacity: 0.9,
-			formatter: function () {
-				// return this.series.name;
-				return this.point.customTooltip;
-			}
+				}
 
-		},
-		plotOptions: {
-			series: {
-				allowPointSelect: false,
-				enableMouseTracking: false,
-				fillOpacity: 0.6,
-				lineWidth: 0,
-				marker: {
-					enabled: false
+			},
+
+			series: [{
+				id: 'HRZ',
+				name: 'High risk zone',
+				color: 'red',
+				type: 'arearange',
+				data: addXCoordinatesWithRange(riskZone.series[riskZone.highIntermediate], riskZone.series[riskZone.high], riskZone.interval, riskZone.startsAt)
+			}, {
+				id: 'HIRZ',
+				name: 'High-intermediate risk zone',
+				color: 'orange',
+				data: addXCoordinatesWithRange(riskZone.series[riskZone.lowIntermediate], riskZone.series[riskZone.highIntermediate], riskZone.interval, riskZone.startsAt)
+			}, {
+				id: 'LIRZ',
+				name: 'Low-intermediate risk zone',
+				color: 'yellow',
+				data: addXCoordinatesWithRange(riskZone.series[riskZone.low], riskZone.series[riskZone.lowIntermediate], riskZone.interval, riskZone.startsAt)
+			}, {
+				id: 'LRZ',
+				name: 'Low risk zone',
+				color: 'green',
+				// xAxis: 1,
+				data: addXCoordinatesWithRange(riskZone.series[riskZone.zero], riskZone.series[riskZone.low], riskZone.interval, riskZone.startsAt)
+			}, {
+				id: 'photoHighRisk',
+				name: 'Phototherapy thresholds', // photoTxHighRisk, Infants at higher risk (35-37w6d and risk factors)
+				color: treatmentZone.phototherapylineColor,
+				type: 'spline',
+				lineWidth: treatmentZone.lineWidth,
+				visible: treatmentZone.phototherapyVisible,
+				data: addXCoordinates(treatmentZone.phototherapySeries[treatmentZone.high], treatmentZone.interval, treatmentZone.startsAt)
+			}, {
+				id: 'photoMediumRisk',
+				name: 'Infants at medium risk (38+ weeks and risk factors, or 35-37w6d and well)', // photoTxMediumRisk
+				color: treatmentZone.phototherapylineColor,
+				type: 'spline',
+				dashStyle: 'dash',
+				lineWidth: treatmentZone.lineWidth,
+				visible: treatmentZone.phototherapyVisible,
+				linkedTo: ':previous',
+				data: addXCoordinates(treatmentZone.phototherapySeries[treatmentZone.medium], treatmentZone.interval, treatmentZone.startsAt)
+			}, {
+				id: 'photoLowRisk',
+				name: 'Phototherapy thresholds', // 'Infants at lower risk (38+ weeks and well)', // photoTxLowRisk
+				color: treatmentZone.phototherapylineColor,
+				type: 'spline',
+				dashStyle: 'dot',
+				lineWidth: treatmentZone.lineWidth,
+				visible: treatmentZone.phototherapyVisible,
+				linkedTo: ':previous',
+				data: addXCoordinates(treatmentZone.phototherapySeries[treatmentZone.low], treatmentZone.interval, treatmentZone.startsAt)
+			}, {
+				id: 'transfusionHighRisk',
+				name: 'Transfusion thresholds<br>(low risk &#8943;, medium --, high risk &#8213;)', // 'Infants at higher risk (35-37w6d and risk factors: isoimmune disease, G6PD, asphysxia, lethargy, temp instability, sepis, albumin < 3.0 g/dL if measured)', // transfusionHighRisk
+				color: treatmentZone.transfusionLineColor,
+				type: 'spline',
+				lineWidth: treatmentZone.lineWidth,
+				visible: treatmentZone.transfusiontherapyVisible,
+				data: addXCoordinates(treatmentZone.transfusionSeries[treatmentZone.high], treatmentZone.interval, treatmentZone.startsAt)
+			}, {
+				id: 'transfusionMediumRisk',
+				name: 'Infants at medium risk (38+ weeks and risk factors, or 35-37w6d and well)', // transfusionMediumRisk
+				color: treatmentZone.transfusionLineColor,
+				type: 'spline',
+				dashStyle: 'dash',
+				lineWidth: treatmentZone.lineWidth,
+				visible: treatmentZone.transfusiontherapyVisible,
+				linkedTo: ':previous',
+				data: addXCoordinates(treatmentZone.transfusionSeries[treatmentZone.medium], treatmentZone.interval, treatmentZone.startsAt)
+			}, {
+				id: 'transfusionLowRisk',
+				name: 'Infants at lower risk (38+ weeks and well)', // 'Infants at lower risk (38+ weeks and well)', // transfusionLowRisk
+				color: treatmentZone.transfusionLineColor,
+				type: 'spline',
+				dashStyle: 'dot',
+				lineWidth: treatmentZone.lineWidth,
+				visible: treatmentZone.transfusiontherapyVisible,
+				linkedTo: ':previous',
+				data: addXCoordinates(treatmentZone.transfusionSeries[treatmentZone.low], treatmentZone.interval, treatmentZone.startsAt)
+			}, { // Serum level is a filled black dot, POC is a filled diamond, and POC is a filled square
+				name: 'Bilirubin level<br>(serum: &#9679;, POC: &diams;, transcut: &#9632;)<br><br>' +
+					// '<button type="button" class="btn btn-info btn-sm" data-toggle="modal" data-target="#copyModal">Click to copy graph</button>',
+                    // We gave up on the modal version (where we copy the image into a modal window)
+                    // since that fails in IE10
+                    '<button type="button" class="btn btn-info btn-sm" onclick="copyGraphToPNG()">Click to copy graph</button>',
+
+                color: 'black',
+				type: 'line',
+				animation: true,
+				events: {
+					afterAnimate: function () {
+						// $('#container svg').toImage('#copyImage');
+						// convertSVGtoPNG('#copyImage');
+					},
+					legendItemClick: false
 				},
-				animation: false
-
+				allowPointSelect: false,
+				enableMouseTracking: true,
+				fillOpacity: 1,
+				lineWidth: treatmentZone.lineWidth,
+				marker: {
+					enabled: true
+				},
+				data: resultsSeries
 			}
+			]
+		}; // end chartOptions definition
 
-		},
+	var chart = new Highcharts.Chart(chartOptions);
 
-		series: [{
-			id: 'HRZ',
-			name: 'High risk zone',
-			color: 'red',
-			type: 'arearange',
-			data: addXCoordinatesWithRange(riskZone.series[riskZone.highIntermediate], riskZone.series[riskZone.high], riskZone.interval, riskZone.startsAt)
-		}, {
-			id: 'HIRZ',
-			name: 'High-intermediate risk zone',
-			color: 'orange',
-			data: addXCoordinatesWithRange(riskZone.series[riskZone.lowIntermediate], riskZone.series[riskZone.highIntermediate], riskZone.interval, riskZone.startsAt),
-		}, {
-			id: 'LIRZ',
-			name: 'Low-intermediate risk zone',
-			color: 'yellow',
-			data: addXCoordinatesWithRange(riskZone.series[riskZone.low], riskZone.series[riskZone.lowIntermediate], riskZone.interval, riskZone.startsAt),
-		}, {
-			id: 'LRZ',
-			name: 'Low risk zone',
-			color: 'green',
-			// xAxis: 1,
-			data: addXCoordinatesWithRange(riskZone.series[riskZone.zero], riskZone.series[riskZone.low], riskZone.interval, riskZone.startsAt),
-		}, {
-			id: 'photoHighRisk',
-			name: 'Phototherapy thresholds', // photoTxHighRisk, Infants at higher risk (35-37w6d and risk factors)
-			color: treatmentZone.phototherapylineColor,
-			type: 'spline',
-			lineWidth: treatmentZone.lineWidth,
-			visible: treatmentZone.phototherapyVisible,
-			data: addXCoordinates(treatmentZone.phototherapySeries[treatmentZone.high], treatmentZone.interval, treatmentZone.startsAt)
-		}, {
-			id: 'photoMediumRisk',
-			name: 'Infants at medium risk (38+ weeks and risk factors, or 35-37w6d and well)', // photoTxMediumRisk
-			color: treatmentZone.phototherapylineColor,
-			type: 'spline',
-			dashStyle: 'dash',
-			lineWidth: treatmentZone.lineWidth,
-			visible: treatmentZone.phototherapyVisible,
-			linkedTo: ':previous',
-			data: addXCoordinates(treatmentZone.phototherapySeries[treatmentZone.medium], treatmentZone.interval, treatmentZone.startsAt)
-		}, {
-			id: 'photoLowRisk',
-			name: 'Phototherapy thresholds', // 'Infants at lower risk (38+ weeks and well)', // photoTxLowRisk
-			color: treatmentZone.phototherapylineColor,
-			type: 'spline',
-			dashStyle: 'dot',
-			lineWidth: treatmentZone.lineWidth,
-			visible: treatmentZone.phototherapyVisible,
-			linkedTo: ':previous',
-			data: addXCoordinates(treatmentZone.phototherapySeries[treatmentZone.low], treatmentZone.interval, treatmentZone.startsAt)
-		}, {
-			id: 'transfusionHighRisk',
-			name: 'Transfusion thresholds<br>(low risk &#8943;, medium --, high risk &#8213;)', // 'Infants at higher risk (35-37w6d and risk factors: isoimmune disease, G6PD, asphysxia, lethargy, temp instability, sepis, albumin < 3.0 g/dL if measured)', // transfusionHighRisk
-			color: treatmentZone.transfusionLineColor,
-			type: 'spline',
-			lineWidth: treatmentZone.lineWidth,
-			visible: treatmentZone.transfusiontherapyVisible,
-			data: addXCoordinates(treatmentZone.transfusionSeries[treatmentZone.high], treatmentZone.interval, treatmentZone.startsAt)
-		}, {
-			id: 'transfusionMediumRisk',
-			name: 'Infants at medium risk (38+ weeks and risk factors, or 35-37w6d and well)', // transfusionMediumRisk
-			color: treatmentZone.transfusionLineColor,
-			type: 'spline',
-			dashStyle: 'dash',
-			lineWidth: treatmentZone.lineWidth,
-			visible: treatmentZone.transfusiontherapyVisible,
-			linkedTo: ':previous',
-			data: addXCoordinates(treatmentZone.transfusionSeries[treatmentZone.medium], treatmentZone.interval, treatmentZone.startsAt)
-		}, {
-			id: 'transfusionLowRisk',
-			name: 'Infants at lower risk (38+ weeks and well)', // 'Infants at lower risk (38+ weeks and well)', // transfusionLowRisk
-			color: treatmentZone.transfusionLineColor,
-			type: 'spline',
-			dashStyle: 'dot',
-			lineWidth: treatmentZone.lineWidth,
-			visible: treatmentZone.transfusiontherapyVisible,
-			linkedTo: ':previous',
-			data: addXCoordinates(treatmentZone.transfusionSeries[treatmentZone.low], treatmentZone.interval, treatmentZone.startsAt)
-		}, {
-			name: 'Bilirubin level<br>(serum: &#9679;, POC: &diams;, transcut: &FilledSmallSquare;)',
-			color: 'black',
-			type: 'line',
-			animation: true,
-			allowPointSelect: false,
-			enableMouseTracking: true,
-			fillOpacity: 1,
-			lineWidth: treatmentZone.lineWidth,
-			marker: {
-				enabled: true
-			},
-			data: resultsSeries
+	// SVG can't be copied and pasted as of 2016, but clinicians will reasonably want to paste this chart
+	// into their progress notes.
+	// Make a PNG version of the chart that can show up in a modal dialog for copy/pasting
+	// We can grab the <svg> element, and convert it on the fly to a PNG img that can be displayed in a modal dialog
+	// for copying and pasting the usual way
 
-		}
+	// $('#container svg').toImage('#copyImage');
 
-		]
 
-	});		// end var new chart...
+
+
 }			// End function renderChart
 
+// Convert the Highcharts SVG to a PNG so it can be copied and pasted
+function convertSVGtoPNG2(dest) {
+	var svg = $('#container svg').html();
+
+	window.onbeforeunload = null;
+	var mycanvas = document.createElement('canvas');
+	canvg(mycanvas, svg);
+	var png = mycanvas.toDataURL("image/png");
+
+	// $("body").append("<image src='" + mycanvas.toDataURL("image/png") + "'/>");
+	$("#copyImageDiv").append("<image src='" + png + "'/>");
+
+	/*
+	var svg = Highcharts.getSVG(chart);
+	var width = svg.width() / 1.5;
+	var height = svg.height() / 1.5;
+
+	// var svg = document.getElementById('container#svg');
+	var canvas = document.createElement('canvas');
+	canvg(canvas, svg); // .html()
+	var png = canvas.toDataURL("image/png");
+
+	$(dest)
+		.attr('src', png)
+		.width(width)
+		.height(height);
+	*/
+
+
+}
+
+// Convert the Highcharts SVG to a PNG so it can be copied and pasted
+function copyGraphToPNG3() {
+    var svg = $('#container svg').html();
+
+    window.onbeforeunload = null;
+    var mycanvas = document.createElement('canvas');
+    var canvas = document.querySelector("canvas"),
+        context = canvas.getContext("2d");
+
+    // canvg(mycanvas, svg);
+    var png = canvas.toDataURL("image/png");
+
+    // $("body").append("<image src='" + mycanvas.toDataURL("image/png") + "'/>");
+    $("#copyImageDiv").append("<image src='" + png + "'/>");
+
+    /*
+     var svg = Highcharts.getSVG(chart);
+     var width = svg.width() / 1.5;
+     var height = svg.height() / 1.5;
+
+     // var svg = document.getElementById('container#svg');
+     var canvas = document.createElement('canvas');
+     canvg(canvas, svg); // .html()
+     var png = canvas.toDataURL("image/png");
+
+     $(dest)
+     .attr('src', png)
+     .width(width)
+     .height(height);
+     */
+
+
+}
+
+// Convert the Highcharts SVG to a PNG so it can be copied and pasted
+function copyGraphToPNG() {
+    var svghtml = $('#container svg').html();
+    var svg = $('#container svg');
+    var dest = $("#copyImage");
+
+    var width = svg.width(); // / 1.8;
+    var height = svg.height(); // / 1.8;
+
+    window.onbeforeunload = null;
+    var canvas = document.createElement('canvas');
+    // canvas.height = height;
+    // canvas.width = width;
+
+    // the ToDataURL method doesn't work in IE (it considers the canvas to be tained once we render an SVG image, as a malicious site could read from the user file system
+    // canvg renders the SVG onto a canvas element
+    canvg(canvas, svghtml, {
+        scaleWidth: width,
+        scaleHeight: height,
+        ignoreDimensions: true
+    });
+
+	// http://stackoverflow.com/questions/33392591/in-browser-conversion-of-svg-to-png-image-cross-browser-including-ie
+
+    var image = new Image;
+    image.onload = function() {
+        canvas.getContext('2d').drawImage(this, 0, 0, width, height);
+    };
+    image.src = 'data:image/svg+xml;base64,' + window.btoa(svghtml);
+
+    var png = canvas.toDataURL("image/png");
+	// document.body.appendChild(canvas);
+	// $("body").append("<image src='" + png + "'/>");
+	$("body").append("<image src='" + canvas.toDataURL("image/png") + "'/>");
+
+    // imagesrc = 'data:image/svg+xml;base64,' + window.btoa(svghtml);
+
+    // $("body").append("<image src='" + mycanvas.toDataURL("image/png") + "'/>");
+    // $("#copyImageDiv").append("<image src='" + image.src + "'/>");
+
+    /*
+     var svg = Highcharts.getSVG(chart);
+     var width = svg.width() / 1.5;
+     var height = svg.height() / 1.5;
+
+     // var svg = document.getElementById('container#svg');
+     var canvas = document.createElement('canvas');
+     canvg(canvas, svg); // .html()
+     var png = canvas.toDataURL("image/png");
+
+     $(dest)
+     .attr('src', png)
+     .width(width)
+     .height(height);
+     */
+
+
+}
+
+
+// JQuery function to convert SVG to a copy/pastable img - thanks Tim Vasil (www.timvasil.com)
+// Well, it works ok in Chrome, but won't work if opened in a new window in IE10 due to a bug Microsoft won't fix with createObjectURL
+// claiming the blob is cross-server (when it isn't)r
+// $.fn.toImage = function(dest) {
+function copyGraphToPNG4() {
+    var dest = $("#copyImage");
+    var svg = $('#highcharts-container svg');
+
+    var svghtml = $('#highcharts-container svg').html();
+
+    var width = svg.width(); // / 1.8;
+    var height = svg.height(); // / 1.8;
+
+    // Create a blob from the SVG data
+    var svgData = new XMLSerializer().serializeToString(svg);
+
+    if (typeof Blob !== "undefined") {
+        // New version, should work with IE10 but it doesn't seem to in Epic
+        var blob = new Blob([svgData], {type: "image/svg+xml;charset=utf-8"});
+    } else if (window.MSBlobBuilder) { 	// would need separate versions for window.WebKitBlobBuilder || window.MozBobBuilder) {
+        var msblob = new MSBlobBuilder();
+        msblob.append([svgData]);
+        var blob = msblob.getBlob("image/svg+xml;charset=utf-8");
+    }
+
+    // Get the blob's URL
+    var blobUrl = (self.URL || self.webkitURL || self).createObjectURL(blob);
+
+    // Load the blob into an image
+    $(dest)
+        .width(width)
+        .height(height)
+        .on('load', function() {
+            // Overwrite the SVG tag with the img tag
+            svg.replaceWith(this);
+        })
+        .attr('src', blobUrl);
+};
+
+// JQuery function to convert SVG to a copy/pastable img - thanks Tim Vasil (www.timvasil.com)
+// Well, it works ok in Chrome, but won't work if opened in a new window in IE10 due to a bug Microsoft won't fix with createObjectURL
+// claiming the blob is cross-server (when it isn't)
+$.fn.toImage = function(dest) {
+    $(this).each(function() {
+        var svg$ = $(this);
+        var width = svg$.width() / 1.8;
+        var height = svg$.height() / 1.8;
+
+        // Create a blob from the SVG data
+        var svgData = new XMLSerializer().serializeToString(this);
+
+        if (typeof Blob !== "undefined") {
+            // New version, should work with IE10 but it doesn't seem to in Epic
+            var blob = new Blob([svgData], {type: "image/svg+xml;charset=utf-8"});
+        } else if (window.MSBlobBuilder) { 	// would need separate versions for window.WebKitBlobBuilder || window.MozBobBuilder) {
+            var msblob = new MSBlobBuilder();
+            msblob.append([svgData]);
+            var blob = msblob.getBlob("image/svg+xml;charset=utf-8");
+        }
+
+        // Get the blob's URL
+        var blobUrl = (self.URL || self.webkitURL || self).createObjectURL(blob);
+
+        // Load the blob into an image
+        $(dest)
+            .width(width)
+            .height(height)
+            .on('load', function() {
+                // Overwrite the SVG tag with the img tag
+                svg$.replaceWith(this);
+            })
+            .attr('src', blobUrl);
+    });
+};
